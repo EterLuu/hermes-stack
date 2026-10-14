@@ -1,0 +1,37 @@
+# devbox 的 sshd：只允许 dev 用户以公钥登录。端口只映射到宿主机的 127.0.0.1。
+Port 22
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/keys/ssh_host_ed25519_key
+HostKey /etc/ssh/keys/ssh_host_rsa_key
+
+PermitRootLogin no
+AllowUsers dev
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+# 第一个文件由宿主机 secrets/ 只读挂载；第二个可以在 devbox 里自行添加公钥
+AuthorizedKeysFile /run/devbox/authorized_keys .ssh/authorized_keys
+StrictModes no
+
+# 需要开启 PAM：pam_env 负责把 /etc/environment 注入 SSH 会话
+UsePAM yes
+X11Forwarding no
+AllowTcpForwarding yes
+AllowAgentForwarding yes
+PermitUserEnvironment no
+PrintMotd no
+PrintLastLog no
+
+# Hermes 会通过 SendEnv 转发 skill 需要的变量（terminal.env_passthrough），可按需添加变量名
+AcceptEnv LANG LC_* GITHUB_TOKEN GH_TOKEN NPM_TOKEN
+
+# Hermes 通过 ControlMaster 复用连接，一个连接上会有多个会话
+MaxSessions 64
+MaxStartups 30:50:100
+ClientAliveInterval 60
+ClientAliveCountMax 5
+
+# Hermes 用 scp 同步 skills 和附件，OpenSSH 9 及以上的 scp 依赖 SFTP
+Subsystem sftp internal-sftp

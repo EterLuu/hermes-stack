@@ -1,0 +1,208 @@
+# hermes-stack：Telegram ↔ Hermes Agent ↔ 独立开发环境（devbox）
+#
+#   Telegram ──(长轮询，出站)──> hermes   官方镜像，运行网关与 Dashboard
+#                                  │  terminal.backend = ssh：命令、文件读写、代码执行都在 devbox
+#                                  ▼
+#                                devbox   Ubuntu 24.04 开发环境，/workspace
+#                                  ┊
+#                                postgres / redis   可选，COMPOSE_PROFILES=db
+#                                ollama             可选，COMPOSE_PROFILES=ollama
+#
+# 不对外开放端口：Dashboard 和 devbox SSH 只绑定宿主机 127.0.0.1。
+# 首次部署请运行 scripts/init.sh（它会先生成 SSH 密钥等文件），之后用 make up。
+
+name: hermes
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:${HERMES_TAG:-latest}
+    container_name: hermes
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    env_file: .env
+    environment:
+      # 容器内的 hermes 用户使用宿主机用户的 UID/GID，./data 的文件属主保持一致
+      HERMES_UID: ${HOST_UID:-1000}
+      HERMES_GID: ${HOST_GID:-1000}
+      TZ: ${TZ:-UTC}
+      HERMES_TIMEZONE: ${TZ:-UTC}
+      # Dashboard，账号密码见 .env 的 HERMES_DASHBOARD_BASIC_AUTH_*
+      HERMES_DASHBOARD: "1"
+      # SSH 执行后端。configure.sh 会把相同的值写进 config.yaml（网关以 config.yaml 为准）
+      TERMINAL_ENV: ssh
+      TERMINAL_SSH_HOST: devbox
+      TERMINAL_SSH_USER: dev
+      TERMINAL_SSH_PORT: "22"
+      TERMINAL_SSH_KEY: /opt/data/home/.ssh/devbox_ed25519
+      TERMINAL_CWD: /workspace
+    volumes:
+      # Hermes 全部状态：config.yaml / .env / 会话 / 记忆 / skills / cron / 日志
+      - ./data:/opt/data
+      # 只读：Agent 回复 MEDIA:/workspace/... 时，网关直接从这里读取文件发到 Telegram
+      - ./workspace:/workspace:ro
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-9119}:9119"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: 1g
+    stop_grace_period: 30s
+    depends_on:
+      devbox:
+        condition: service_healthy
+    networks: [agent]
+    deploy:
+      resources:
+        limits:
+          memory: ${HERMES_MEM_LIMIT:-4g}
+          cpus: "${HERMES_CPU_LIMIT:-2}"
+    logging: *default-logging
+
+  devbox:
+    build:
+      context: ./devbox
+      args:
+        DEV_UID: ${HOST_UID:-1000}
+        DEV_GID: ${HOST_GID:-1000}
+        DEV_SUDO: ${DEV_SUDO:-true}
+        INSTALL_RUST: ${INSTALL_RUST:-true}
+        # 构建时使用的代理（Docker 预定义的 build-arg，不会保留在镜像里）
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: hermes-devbox:local
+    container_name: hermes-devbox
+    hostname: devbox
+    restart: unless-stopped
+    init: true
+    environment:
+      TZ: ${TZ:-UTC}
+      # entrypoint 把以下变量写入 /etc/environment，所有 SSH 会话（包括 Agent 的命令）都能读到
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+      PGHOST: postgres
+      PGUSER: dev
+      PGDATABASE: dev
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 代码目录，宿主机可以直接访问
+      - ./workspace:/workspace
+      # dev 用户的 home：gh 登录状态、git 配置、~/.local 下的全局工具和缓存
+      - devbox-home:/home/dev
+      # 持久化 SSH host key，重建镜像后 host key 不变
+      - devbox-hostkeys:/etc/ssh/keys
+      - ./secrets/authorized_keys:/run/devbox/authorized_keys:ro
+      # 只读：消息附件的原始路径 /opt/data/cache/... 在 devbox 里也能读到
+      - ./data/cache:/opt/data/cache:ro
+      # 可选：让 Agent 使用宿主机 Docker。这等同于给它宿主机 root 权限，确有需要再打开
+      # - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      # 你自己通过 SSH / VS Code Remote-SSH 进入同一个环境
+      - "127.0.0.1:${DEVBOX_SSH_PORT:-2222}:22"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/22"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
+    networks: [agent]
+    deploy:
+      resources:
+        limits:
+          memory: ${DEVBOX_MEM_LIMIT:-8g}
+          cpus: "${DEVBOX_CPU_LIMIT:-4}"
+    logging: *default-logging
+
+  # ---------- 可选：开发用数据库（COMPOSE_PROFILES=db） ----------
+  postgres:
+    image: postgres:17-alpine
+    container_name: hermes-postgres
+    profiles: ["db"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_DB: dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d dev"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [agent]
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes-redis
+    profiles: ["db"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [agent]
+    logging: *default-logging
+
+  # ---------- 可选：本地 Ollama 模型服务（COMPOSE_PROFILES=ollama） ----------
+  # 配合 STACK_MODEL_PROVIDER=custom、STACK_CUSTOM_BASE_URL=http://ollama:11434/v1 使用。
+  # 端口不映射到宿主机；需要在宿主机上调试时可加 ports: ["127.0.0.1:11434:11434"]
+  ollama:
+    image: ollama/ollama:${OLLAMA_TAG:-latest}
+    container_name: hermes-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      # Hermes 至少需要 64K 上下文，Ollama 的默认值远小于此
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65536}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    # NVIDIA GPU：在宿主机安装 nvidia-container-toolkit 后取消下面的注释
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    networks: [agent]
+    logging: *default-logging
+
+networks:
+  agent:
+    driver: bridge
+
+volumes:
+  devbox-home:
+  devbox-hostkeys:
+  pgdata:
+  redisdata:
+  ollama-models:

@@ -1,0 +1,9 @@
+# devbox 的全局语言版本（由 mise 管理）。修改后运行：docker compose build devbox && make up
+# 单个项目需要其它版本时，在项目目录中运行 mise use node@20 等命令即可。
+[tools]
+node = "lts"
+python = "3.13"
+go = "latest"
+uv = "latest"
+pnpm = "latest"
+yq = "latest"
