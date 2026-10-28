@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 把推荐配置写入 Hermes（data/config.yaml），可以重复运行。
 #   1. 把 .env 中的密钥同步到 data/.env
-#   2. 用 `hermes config set` 写入执行后端、Telegram、时区等推荐设置
+#   2. 用 `hermes config set` 写入执行后端、消息平台、时区等推荐设置
 #   3. STACK_MODEL_PROVIDER 非空时，按 .env 写入模型设置
 #   4. 回读校验，然后重启网关使配置生效
 # 想调整某项设置：修改本文件后重新运行，或使用 make config 直接编辑 config.yaml。
@@ -9,6 +9,11 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 . "$(dirname "$0")/lib.sh"
 require_running hermes
+check_messaging_env
+if [ ${#MESSAGING_PROBLEMS[@]} -gt 0 ]; then
+  for p in "${MESSAGING_PROBLEMS[@]}"; do warn "$p"; done
+  die "请编辑 .env 后重新运行 make configure"
+fi
 
 fail=0
 say "同步密钥到 data/.env"
@@ -42,13 +47,24 @@ cfg terminal.persistent_shell true
 # 单条命令超时（秒）：安装依赖、编译、跑测试都可能比较久
 cfg terminal.timeout          600
 
-# --- Telegram ---
+# --- 消息平台 ---
 # 流式输出（默认关闭）。edit 表示逐步编辑同一条消息，兼容性最好
 cfg streaming.enabled   true
 cfg streaming.transport edit
 cfg platforms.telegram.extra.disable_link_previews     true
 # 网关重启期间收到的消息，重启后照常处理
 cfg platforms.telegram.extra.drop_pending_on_cold_boot false
+
+# Discord：频道里 @Bot 开始任务，自动创建线程；线程内可继续对话。
+# .env 中的同名 DISCORD_* 设置优先于这些推荐值。
+if [ -n "$(env_get DISCORD_BOT_TOKEN)" ]; then
+  cfg discord.require_mention           true
+  cfg discord.auto_thread               true
+  cfg discord.thread_require_mention    false
+  cfg discord.allow_mentions.everyone   false
+  cfg discord.allow_mentions.roles      false
+  cfg group_sessions_per_user           true
+fi
 
 # --- 时区：定时任务按此时区解析 ---
 tz="$(env_get TZ)"; cfg timezone "${tz:-UTC}"
@@ -61,10 +77,10 @@ cfg compression.idle_compact_after_seconds 1800
 cfg approvals.deny '["*git push*--force*", "*git push* -f*", "*git push*+*"]'
 
 # --- 模型 ---
-# STACK_MODEL_PROVIDER 为空：不改动模型配置（由 make model 或 Telegram /model 管理）。
+# STACK_MODEL_PROVIDER 为空：不改动模型配置（由 make model 或聊天中的 /model 管理）。
 # 非空：model.* 以 .env 为准，.env 没有提供的字段会被清除，避免换模型后残留旧设置。
 
-# 把 custom 端点登记到 custom_providers，之后可以在 Telegram /model 菜单里切回它。
+# 把 custom 端点登记到 custom_providers，之后可以在聊天 /model 菜单里切回它。
 # 端点地址变化时删除之前登记的旧地址（记录在 data/.stack-custom-base-url），避免菜单里堆积。
 # 先读取原始 config.yaml 计算新列表，再交给 `hermes config set` 写回：
 # 这样只修改 custom_providers 一项，不会把其它默认值写进配置文件。
@@ -122,7 +138,7 @@ PY
      && json="$(printf '%s\n' "$out" | tail -n2 | head -n1)" \
      && out="$(docker exec hermes hermes config set custom_providers "$json" 2>&1)"; then
     printf '%s' "$1" > "$STACK_CUSTOM_STATE"
-    printf '  %-52s   %s\n' custom_providers "已登记（Telegram /model 菜单里可以切回此端点）"
+    printf '  %-52s   %s\n' custom_providers "已登记（聊天 /model 菜单里可以切回此端点）"
   else
     warn "  登记 /model 菜单项失败（不影响使用）：$(printf '%s' "$out" | tail -n1)"
   fi
@@ -169,7 +185,7 @@ configure_model() {
   model="$(env_get STACK_MODEL)"
   ctx="$(env_get STACK_CONTEXT_LENGTH)"
   if [ -z "$provider" ]; then
-    say "模型：STACK_MODEL_PROVIDER 为空，保留现有模型配置（用 make model 或 Telegram /model 选择）"
+    say "模型：STACK_MODEL_PROVIDER 为空，保留现有模型配置（用 make model 或聊天中的 /model 选择）"
     return 0
   fi
   check_model_env
@@ -242,6 +258,11 @@ check_val() {
 check_val terminal.backend  ssh
 check_val terminal.ssh_host devbox
 check_val streaming.enabled true
+if [ -n "$(env_get DISCORD_BOT_TOKEN)" ]; then
+  check_val discord.require_mention true
+  check_val discord.auto_thread true
+  check_val group_sessions_per_user true
+fi
 
 docker exec hermes hermes config check 2>&1 | grep -vE '^[[:space:]]+○' || true
 

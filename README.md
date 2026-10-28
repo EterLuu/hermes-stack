@@ -1,24 +1,24 @@
 # hermes-stack
 
-在自己的服务器上部署 [Hermes Agent](https://hermes-agent.nousresearch.com)，通过 Telegram 随时使用。Agent 在一个隔离的开发容器里写代码、跑命令、排查问题；你也可以用 SSH 或 VS Code 进入同一个环境，接着它的工作继续。
+在自己的服务器上部署 [Hermes Agent](https://hermes-agent.nousresearch.com)，通过 Telegram 或 Discord 随时使用。Agent 在一个隔离的开发容器里写代码、跑命令、排查问题；你也可以用 SSH 或 VS Code 进入同一个环境，接着它的工作继续。
 
 - **一条命令部署**：`init.sh` 校验配置、生成密钥、构建镜像、启动服务、写入推荐配置并自检。
 - **隔离执行**：Agent 的所有命令都在 devbox 容器里运行，接触不到 Hermes 的 API Key，也不需要挂载 `docker.sock`。
 - **完整开发环境**：Ubuntu 24.04，Node、Python、Go、Rust、gh、Docker CLI 和常用数据库客户端。
 - **任意模型**：Hermes 内置的 provider，或任何 OpenAI / Anthropic 兼容端点，包括自建的 vLLM 和 Ollama。
-- **不开放入站端口**：Telegram 使用长轮询；Dashboard 和 SSH 只监听 `127.0.0.1`。
+- **不开放入站端口**：Telegram 使用长轮询，Discord 使用出站 WebSocket；Dashboard 和 SSH 只监听 `127.0.0.1`。
 - **运维脚本**：自检、备份、恢复、升级。
 
 ## 工作方式
 
 ```
- Telegram（手机 / 电脑）
-        │  长轮询：由 Hermes 主动向外连接，服务器不需要开放端口
+ Telegram / Discord（手机 / 电脑）
+        │  长轮询 / WebSocket：Hermes 主动向外连接，无需开放端口
         ▼
 ┌──────────────────────────────── 服务器 ─────────────────────────────────┐
 │                                                                         │
 │  hermes   官方镜像 nousresearch/hermes-agent                            │
-│   ├─ Telegram 网关、会话、记忆、skills、定时任务     ./data → /opt/data │
+│   ├─ 多平台网关、会话、记忆、skills、定时任务     ./data → /opt/data │
 │   ├─ Dashboard :9119，只监听 127.0.0.1                                  │
 │   └─ terminal.backend = ssh ─────────┐                                  │
 │                                      ▼  内部网络，ed25519 公钥认证      │
@@ -47,15 +47,35 @@ Hermes 使用 SSH 执行后端：Agent 的每条命令、每次文件读写都�
 
 - 一台 Linux 服务器：至少 2 核 4 GB 内存，推荐 4 核 8 GB；预留 20 GB 以上磁盘（devbox 镜像约 3~4 GB）。
 - Docker Engine 24 或更高版本，以及 Docker Compose v2 插件。请按 [Docker 官方文档](https://docs.docker.com/engine/install/) 安装，不要使用 snap 版本。
-- 一个 Telegram 账号。
+- Telegram 或 Discord 账号，任选其一，也可以同时使用。
 
-### 1. 创建 Telegram bot
+### 1. 创建消息平台 Bot
+
+选择 Telegram 或 Discord；同时配置两个平台时，同一网关会同时提供服务。
+
+#### Telegram
 
 1. 打开 [@BotFather](https://t.me/BotFather)，发送 `/newbot`，按提示创建，记下 bot token。
 2. 打开 [@userinfobot](https://t.me/userinfobot)，记下你的**数字用户 ID**。
 3. 可选设置（在 BotFather 中）：
    - 打开 Threaded Mode（Mini App → My bots → 你的 bot → Bot Settings → Threads Settings）：之后可以在私聊中用 `/topic` 开多个独立会话，例如每个项目一个。
    - `/setinline` 打开 inline 模式：之后可以在任意聊天中输入 `@你的bot 关键词` 搜索命令和 skill。
+
+#### Discord
+
+1. 打开 [Discord Developer Portal](https://discord.com/developers/applications)，创建 Application，在 **Bot** 页面获取 Bot token。
+2. 在 **Privileged Gateway Intents** 开启 **Message Content Intent** 并保存。使用数字用户 ID 白名单时无需 Server Members Intent；如果额外配置角色白名单，需要开启它。
+3. 在 **Installation → Guild Install** 设置 scopes：`bot`、`applications.commands`。权限选择 **View Channels、Send Messages、Embed Links、Attach Files、Read Message History、Create Public Threads、Send Messages in Threads、Add Reactions**。
+   也可以使用邀请链接，把 `<APPLICATION_ID>` 换成应用 ID：
+
+   ```text
+   https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot+applications.commands&permissions=309237763136
+   ```
+
+4. 用具有管理服务器权限的账号打开邀请链接，将 Bot 加入服务器。还需检查目标频道的权限覆盖允许上述操作。
+5. 在 Discord **用户设置 → 高级 → 开发者模式** 中打开开发者模式，右键自己的头像，选择 **复制用户 ID**。频道 ID 也可右键复制。
+
+保持 **Interactions Endpoint URL** 为空，让 Hermes 通过 Gateway 接收 slash commands 和按钮事件。普通聊天、附件和命令均不需要公网回调地址。
 
 ### 2. 填写配置
 
@@ -64,14 +84,23 @@ git clone <本仓库地址> hermes-stack && cd hermes-stack
 cp .env.example .env && chmod 600 .env
 ```
 
-编辑 `.env`，至少填写：
+编辑 `.env`，填写所选平台的 token 和数字用户 ID。例如仅使用 Discord：
+
+```ini
+DISCORD_BOT_TOKEN=你的BotToken
+DISCORD_ALLOWED_USERS=你的数字用户ID
+```
+
+仅使用 Telegram：
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456789:AAH...
-TELEGRAM_ALLOWED_USERS=你的数字用户 ID
+TELEGRAM_ALLOWED_USERS=你的数字用户ID
 ```
 
-模型可以现在配置（见 [模型](#模型)），也可以部署后用 `make model` 交互选择。如果服务器无法直接访问 Telegram 或模型 API，同时配置 [网络代理](#网络代理)。
+两个平台都填写即可同时启用；不使用的平台 token 留空。每个启用的平台必须设置自己的用户白名单，多个 ID 用逗号分隔。将 `HOST_UID` / `HOST_GID` 改为宿主机 `id -u` / `id -g` 的结果（不能为 0）。
+
+模型可以现在配置（见 [模型](#模型)），也可以部署后用 `make model` 交互选择。如果服务器无法直接访问 Telegram、Discord 或模型 API，同时配置 [网络代理](#网络代理)。
 
 ### 3. 初始化
 
@@ -85,7 +114,7 @@ make init        # 即 ./scripts/init.sh
 
 `make check` 应该全部通过。`make check-llm` 会额外实际调用一次模型（消耗少量 token）。
 
-然后在 Telegram 中给 bot 发送：
+然后在所选平台中私聊 Bot，发送以下消息。Discord 也可以在服务器频道中 `@Bot 你好`，并在自动创建的线程中继续：
 
 ```
 你好
@@ -98,6 +127,8 @@ make init        # 即 ./scripts/init.sh
 ```
 把 https://github.com/<you>/<repo> clone 到 /workspace，安装依赖并运行测试，告诉我结果
 ```
+
+启用 Discord 后，还应在真实服务器上验证：频道中 `@Bot` 创建线程、线程内继续对话、`/model` 与 `/stop`、审批和澄清按钮、上传文件与 `MEDIA:` 回传，以及 `/sethome` 后的定时任务投递。用未授权账号确认无法触发 Agent，并检查超过 2000 字符的回复能够完整分片。
 
 ## 使用
 
@@ -116,6 +147,28 @@ make init        # 即 ./scripts/init.sh
 | 发送文件或图片 | Agent 在 devbox 的 `~/.hermes/cache/` 下读取；Telegram Bot API 限制单个文件 20 MB |
 
 Agent 要执行有风险的命令时，Hermes 会先让一个审核模型判断（`approvals.mode: smart`），需要你决定的会发到聊天中，5 分钟内回复 `yes` 或 `no`。本项目还禁止了 force push，即使你批准也不会执行。
+
+### Discord
+
+- **私聊**：白名单用户直接发送消息即可。
+- **服务器频道**：默认 `@Bot` 开始任务，Bot 自动创建线程；之后在线程内继续，无需重复提及。
+- **独立会话**：不同线程、不同用户分别维护上下文；Telegram 与 Discord 的会话也分别维护。它们共用同一 Agent 的模型配置、记忆和 devbox。
+- **常用命令**：`/new`、`/model`、`/stop`、`/sethome`、`/whoami`。命令通过原生 `/` 菜单使用；Telegram 的 `/topic` 对应 Discord 的线程使用方式。
+- **文件与审批**：支持文件、图片、`MEDIA:` 回传，以及审批与澄清按钮。长回复由 Hermes 按 Discord 的 2000 字符限制分片。接收附件默认最多 32 MiB，实际发送上限由 Discord 当前频道或交互限制决定。
+- **定时任务**：在需要接收通知的位置运行 `/sethome`，Hermes 会保存 `DISCORD_HOME_CHANNEL`。两平台可分别设置 home；定时任务按其配置的投递平台和目标发送。
+
+可选配置写在 `.env` 中，修改后运行 `make up`：
+
+```ini
+# 只允许在这些服务器频道响应；线程继承父频道范围，私聊仍由用户白名单控制。
+DISCORD_ALLOWED_CHANNELS=123456789012345678
+# 某个频道免 @Bot，默认在频道内直接回复。
+DISCORD_FREE_RESPONSE_CHANNELS=123456789012345678
+# 多 Bot 共用线程时也要求 @Bot。
+DISCORD_THREAD_REQUIRE_MENTION=true
+```
+
+`DISCORD_ALLOWED_CHANNELS` 是频道范围设置，项目仍要求填写 `DISCORD_ALLOWED_USERS`。可额外配置 `DISCORD_ALLOWED_ROLES`，它与用户白名单按「或」授权，并需要 Server Members Intent。第一版推荐使用数字用户 ID；语音频道实时通话属于可选能力，参考 [Hermes Discord 文档](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord)。
 
 ### 进入开发环境
 
@@ -169,6 +222,7 @@ tailscale serve status              # 显示访问地址，如 https://<机器�
 | `make restart`                | 重启网关（修改 `config.yaml` 或 `SOUL.md` 后）                                  |
 | `make logs`                   | 查看网关日志                                                                    |
 | `make check`                  | 自检；`make check-llm` 额外调用一次模型，`make doctor` 额外运行 `hermes doctor` |
+| `make test`                   | 离线回归测试，无需 Docker 或 Bot 凭据；也可运行 `python3 -m unittest discover -s tests -v` |
 | `make model`                  | 交互选择模型                                                                    |
 | `make config`                 | 编辑 Hermes 的 `config.yaml`                                                    |
 | `make configure`              | 重新写入推荐配置和 `.env` 中的模型设置                                          |
@@ -183,7 +237,7 @@ tailscale serve status              # 显示访问地址，如 https://<机器�
 模型有两种管理方式，任选其一：
 
 - **在 `.env` 中配置**（推荐，便于重新部署）：设置 `STACK_MODEL_PROVIDER` 等变量后运行 `make configure`。此后模型设置以 `.env` 为准，每次 `make configure` 都会按 `.env` 重写。
-- **交互选择**：`STACK_MODEL_PROVIDER` 留空，用 `make model` 或 Telegram 中的 `/model` 选择。`make configure` 不会改动模型设置。
+- **交互选择**：`STACK_MODEL_PROVIDER` 留空，用 `make model` 或聊天中的 `/model` 选择。`make configure` 不会改动模型设置。
 
 ### 内置 provider
 
@@ -209,7 +263,7 @@ STACK_MODEL=anthropic/claude-sonnet-5
 | `STACK_CUSTOM_API_KEY`  | 端点的 API Key；无鉴权的本地服务留空                                                                |
 | `STACK_CUSTOM_API_MODE` | 留空自动判断；也可以指定 `chat_completions`（OpenAI 兼容）或 `anthropic_messages`（Anthropic 兼容） |
 | `STACK_CONTEXT_LENGTH`  | 模型的上下文窗口（token），建议填写，至少 64000                                                     |
-| `STACK_CUSTOM_NAME`     | 在 Telegram `/model` 菜单中显示的名字（可选）                                                       |
+| `STACK_CUSTOM_NAME`     | 在聊天 `/model` 菜单中显示的名字（可选）                                                       |
 
 `STACK_CUSTOM_BASE_URL` 的常见写法：
 
@@ -232,7 +286,7 @@ model:
   default: qwen3-coder-plus
   api_key: ${STACK_CUSTOM_API_KEY}
   context_length: 131072
-custom_providers: # 之后可以在 Telegram /model 菜单中切回这个端点
+custom_providers: # 之后可以在聊天 /model 菜单中切回这个端点
   - name: api.example.com
     base_url: https://api.example.com/v1
     key_env: STACK_CUSTOM_API_KEY
@@ -251,10 +305,11 @@ custom_providers: # 之后可以在 Telegram /model 菜单中切回这个端点
 
 ## 网络代理
 
-如果服务器无法直接访问 Telegram、模型 API、GitHub 或 npm 等站点，在 `.env` 中配置代理：
+如果服务器无法直接访问 Telegram、Discord、模型 API、GitHub 或 npm 等站点，在 `.env` 中配置代理：
 
 | 变量                         | 作用                                                                           |
 | ---------------------------- | ------------------------------------------------------------------------------ |
+| `DISCORD_PROXY`              | 只用于 Discord 的 REST、Gateway WebSocket 和附件连接，支持 `http://`、`https://`、`socks5://`；优先于通用代理 |
 | `TELEGRAM_PROXY`             | 只用于连接 Telegram，支持 `http://` 和 `socks5://`                             |
 | `HTTPS_PROXY` / `HTTP_PROXY` | 模型 API、网页工具，以及 devbox 中的 git、npm、pip；构建 devbox 镜像时也会使用 |
 | `NO_PROXY`                   | 不经过代理的地址。默认已包含本机、compose 服务名和私有网段                     |
@@ -272,7 +327,7 @@ custom 端点位于本机或内网时必须绕过代理。`make configure` 会�
 - 项目根目录的 `.env`：你需要维护的配置文件。
 - `data/.env`：Hermes 自己的配置文件。Hermes 网关从这里读取 bot token、白名单和 API Key，而不是从容器环境变量读取。
 
-`make up` 会把 `.env` 中的 `TELEGRAM_*`、`*_API_KEY` 和 `*_TOKEN` 同步到 `data/.env`，有变化时重启网关（`init`、`configure`、`update` 和 `restore` 也会同步）。从 `.env` 中删除的键，也会从 `data/.env` 中删除；Hermes 自己写入的键，例如 `/sethome` 设置的 `TELEGRAM_HOME_CHANNEL`，不受影响。
+`make up` 会把 `.env` 中的 `TELEGRAM_*`、`DISCORD_*`、`*_API_KEY` 和 `*_TOKEN` 同步到 `data/.env`，有变化时重启网关（`init`、`configure`、`update` 和 `restore` 也会同步）。从 `.env` 中删除的键，也会从 `data/.env` 中删除；Hermes 自己写入的键，例如 `/sethome` 设置且未由根目录 `.env` 管理的 `TELEGRAM_HOME_CHANNEL` / `DISCORD_HOME_CHANNEL`，不受影响。
 
 因此，**修改 `.env` 后请运行 `make up`**，而不是 `docker compose up -d`。`make check` 会列出修改后还没有同步的键。
 
@@ -288,12 +343,16 @@ custom 端点位于本机或内网时必须绕过代理。`make configure` 会�
 | `streaming.enabled`、`streaming.transport`           | true、edit                  | 回复逐步显示在同一条消息中                            |
 | `platforms.telegram.extra.disable_link_previews`     | true                        | 回复中的链接不显示预览                                |
 | `platforms.telegram.extra.drop_pending_on_cold_boot` | false                       | 网关重启期间收到的消息，重启后照常处理                |
+| `discord.require_mention`、`discord.auto_thread` | true、true | Discord 频道中提及 Bot 自动创建线程 |
+| `discord.thread_require_mention` | false | 在线程内继续对话时无需重复提及 |
+| `discord.allow_mentions.everyone`、`roles` | false、false | 回复不触发全体或角色通知 |
+| `group_sessions_per_user` | true | 共享频道中按用户隔离会话 |
 | `timezone`                                           | `.env` 中的 `TZ`            | 定时任务使用的时区                                    |
 | `compression.idle_compact_after_seconds`             | 1800                        | 间隔 30 分钟以上再继续对话时，先压缩旧上下文          |
 | `approvals.deny`                                     | force push 相关的命令       | 即使批准也不会执行                                    |
 | `model.*`、`custom_providers`                        | 来自 `.env`                 | 见 [模型](#模型)；`STACK_MODEL_PROVIDER` 为空时不修改 |
 
-其它设置可以用 `make config` 编辑，修改后运行 `make restart`。查看全部设置：`docker exec hermes hermes config`。
+Discord 推荐设置只在配置了 `DISCORD_BOT_TOKEN` 时写入；等效 `DISCORD_*` 环境变量优先。已有部署增加 Discord 时，在 `.env` 填写凭据后运行 `make up && make configure`，然后运行 `make check`。其它设置可以用 `make config` 编辑，修改后运行 `make restart`。查看全部设置：`docker exec hermes hermes config`。
 
 ### 自定义
 
@@ -314,8 +373,8 @@ custom 端点位于本机或内网时必须绕过代理。`make configure` 会�
 
 本项目默认：
 
-- 不开放任何入站端口：Telegram 使用长轮询，Dashboard 和 devbox SSH 只监听 `127.0.0.1`（`make check` 会检查）；
-- 只有 `TELEGRAM_ALLOWED_USERS` 中的用户可以使用 bot，未设置时拒绝所有人；
+- 不开放任何入站端口：Telegram 使用长轮询，Discord 使用出站 WebSocket，Dashboard 和 devbox SSH 只监听 `127.0.0.1`（`make check` 会检查）；
+- 每个启用的平台必须设置数字用户 ID 白名单（`TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS`）；额外配置 Discord 角色白名单会授予对应角色成员访问权限；
 - Dashboard 需要账号密码登录；
 - devbox 只允许公钥登录，禁止 root 登录；
 - Agent 在 devbox 中执行命令，与持有 API Key 的 Hermes 进程隔离，devbox 中看不到 `.env`；
@@ -325,7 +384,7 @@ custom 端点位于本机或内网时必须绕过代理。`make configure` 会�
 
 - 不要对外开放 Hermes 的 API 端口（8642）。确实需要时设置 `API_SERVER_KEY`，并放在反向代理或 VPN 之后。
 - 不要挂载 `docker.sock`，除非清楚后果。
-- bot token 泄露时，在 BotFather 中 `/revoke`，更新 `.env` 后运行 `make up`。
+- bot token 泄露时，Telegram 在 BotFather 中 `/revoke`，Discord 在 Developer Portal 重置 Bot token；更新 `.env` 后运行 `make up`。
 - 定期备份，并把 `backups/` 同步到另一台机器。
 
 ## 备份、恢复与升级
@@ -351,8 +410,11 @@ make update                                   # 备份，然后升级 Hermes 镜
 
 | 现象                                          | 处理方法                                                                                                                                                                                                        |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| bot 没有任何回复                              | 看 `make check` 的 Telegram 部分。最常见的原因是 `data/.env` 中没有 bot token：运行 `make up`。其它可能：token 无效、同一个 token 在别处使用、服务器无法连接 Telegram（设置 `TELEGRAM_PROXY` 或 `HTTPS_PROXY`） |
+| bot 没有任何回复                              | 看 `make check` 的消息网关与对应平台部分。最常见的原因是 `data/.env` 中没有 bot token：运行 `make up`。其它可能：token 无效、同一个 token 在别处使用、服务器无法连接 Telegram（设置 `TELEGRAM_PROXY` 或 `HTTPS_PROXY`） |
 | bot 只回复配对码，或回复 unauthorized         | 你的用户 ID 不在白名单中。`TELEGRAM_ALLOWED_USERS` 要填数字 ID，不是用户名；`make check` 会列出最近被拒绝的用户 ID。修改后运行 `make up`                                                                        |
+| Discord 离线，日志出现 intents / 4014 | Developer Portal → Bot 开启 Message Content Intent；角色白名单还需要 Server Members Intent。保存后运行 `make restart` |
+| Discord REST 成功但不回复 | REST 成功只证明 HTTP 和 token 可用。看网关是否已连接，检查用户白名单、频道范围、是否 @Bot、Interactions Endpoint URL 是否为空 |
+| Discord 报 403 / Missing Access / Missing Permissions | 检查服务器角色以及父分类、频道权限覆盖，尤其是创建公开线程和在线程发送消息权限；修改邀请权限后需重新授权 |
 | 修改 `.env` 后没有生效                        | 需要运行 `make up`。值中含有 `$` 时要用单引号包起来                                                                                                                                                             |
 | 回复时好时坏，日志中反复出现 polling conflict | 同一个 bot token 在另一处也在运行，停止其中一处                                                                                                                                                                 |
 | 通过 Tailscale IP 打不开 9119 端口            | Dashboard 只监听 `127.0.0.1`，请使用 `tailscale serve`，见 [Dashboard](#dashboard)                                                                                                                              |
@@ -397,7 +459,9 @@ hermes-stack/
 │   ├── lib.sh              公共函数
 │   ├── sync_env.py         ┐
 │   ├── model_diag.py       ├ 在 hermes 容器内运行的辅助脚本
-│   └── gateway_diag.py     ┘
+│   ├── gateway_diag.py     │
+│   └── discord_diag.py     ┘
+├── tests/                  离线回归测试（make test）
 ├── templates/SOUL.md       Agent 的人设和工作规则
 │
 ├── data/                   运行后生成：Hermes 的全部状态
@@ -409,6 +473,8 @@ hermes-stack/
 ## 参考
 
 - [Hermes Agent：Docker 部署](https://hermes-agent.nousresearch.com/docs/user-guide/docker)
+- [Hermes Agent：Discord](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord)
+- [Discord Gateway 与 intents](https://docs.discord.com/developers/events/gateway)
 - [Hermes Agent：Telegram](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram)
 - [Hermes Agent：配置与终端后端](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)
 - [Hermes Agent：模型配置](https://hermes-agent.nousresearch.com/docs/user-guide/configuring-models)

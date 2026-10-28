@@ -6,7 +6,7 @@ config.yaml 中的 ${STACK_CUSTOM_API_KEY} 引用也从这里展开。
 输入（stdin）：每行 KEY=VALUE，即 data/.env 中应有的全部同步键。
   - 值不同或缺失的键会被写入；
   - 上次同步过、这次不再提供的键会被删除（记录在 data/.stack-synced-env）；
-  - 其它键（例如 /sethome 写入的 TELEGRAM_HOME_CHANNEL）保持不变。
+  - 其它键（例如 /sethome 写入的 TELEGRAM_HOME_CHANNEL / DISCORD_HOME_CHANNEL）保持不变。
 写入使用 Hermes 自己的 save_env_value / remove_env_value，引号规则和文件锁与 Hermes 一致。
 
 输出：每行 "set|removed|error<TAB>KEY[<TAB>原因]"，最后一行 "ok<TAB>变更数"。不输出任何值。

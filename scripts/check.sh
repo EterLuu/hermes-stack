@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 自检：容器、hermes → devbox SSH、工具链、Hermes 配置、模型、Telegram、端口暴露、密钥同步、备份。
+# 自检：容器、hermes → devbox SSH、工具链、Hermes 配置、模型、Telegram / Discord、端口暴露、密钥同步、备份。
 # 用法：scripts/check.sh [--llm] [--doctor]
 #   --llm     实际调用一次模型（消耗少量 token）
 #   --doctor  另外运行 hermes doctor
@@ -82,31 +82,49 @@ if [ "$LLM_TEST" = 1 ]; then
   fi
 fi
 
-echo "${C_B}[Telegram]${C_0}"
-# 读取网关的当前运行状态，而不是日志中的历史记录
+echo "${C_B}[消息网关]${C_0}"
+check_messaging_env
+for problem in "${MESSAGING_PROBLEMS[@]}"; do bad "$problem"; done
+platforms=()
+while read -r platform; do
+  [ -z "$platform" ] || platforms+=("$platform")
+done < <(enabled_platforms)
+# 读取网关当前状态，REST 成功不能代替 Gateway 在线。
 tg_state=unknown
 while IFS=$'\t' read -r level msg; do
   case "$level" in
-    OK) ok "$msg"; case "$msg" in *已连接*) tg_state=connected ;; esac ;;
+    OK) ok "$msg"; case "$msg" in "Telegram 已连接"*) tg_state=connected ;; esac ;;
     BAD) bad "$msg" ;; NOTE) note "$msg" ;; *) [ -z "$level" ] || note "$level $msg" ;;
   esac
-done < <(docker exec -i -u hermes hermes "$HERMES_PY" - < "$STACK_DIR/scripts/gateway_diag.py" 2>/dev/null \
-         || echo "NOTE	网关诊断没有运行成功（手动运行查看详情：docker exec -i -u hermes hermes $HERMES_PY - < scripts/gateway_diag.py）")
+done < <(docker exec -i -u hermes hermes "$HERMES_PY" - "${platforms[@]}" < "$STACK_DIR/scripts/gateway_diag.py" 2>/dev/null \
+         || printf 'BAD\t网关诊断运行失败，检查镜像版本并运行 make doctor\n')
 
+echo "${C_B}[Telegram]${C_0}"
 token="$(env_get TELEGRAM_BOT_TOKEN)"; tproxy="$(env_get TELEGRAM_PROXY)"
-if [ -z "$token" ]; then bad ".env 中的 TELEGRAM_BOT_TOKEN 为空"
+if [ -z "$token" ]; then info "未配置 Telegram，跳过"
 else
   resp="$(docker exec -e TOKEN="$token" -e TPROXY="$tproxy" hermes sh -c \
     'curl -sS --max-time 15 ${TPROXY:+-x "$TPROXY"} "https://api.telegram.org/bot${TOKEN}/getMe"' 2>&1 || true)"
   if printf '%s' "$resp" | grep -q '"ok":true'; then
-    ok "Bot API 可以访问：@$(printf '%s' "$resp" | sed -n 's/.*"username":"\([^"]*\)".*/\1/p')"
+    ok "Bot API 可以访问：@$(printf '%s' "$resp" | sed -n 's/.*"username":"\([^"[:space:]]*\)".*/\1/p')"
   elif printf '%s' "$resp" | grep -q '"error_code":401'; then
     bad "Bot token 无效（401）：请到 @BotFather 重新获取"
   elif [ "$tg_state" = connected ]; then
     note "容器内无法直接访问 api.telegram.org，但网关已连接（Hermes 会自动改用备用地址或代理），通常无需处理"
   else
-    bad "无法访问 api.telegram.org：${resp:0:120}（服务器无法直连 Telegram 时，请设置 TELEGRAM_PROXY 或 HTTPS_PROXY）"
+    bad "无法访问 api.telegram.org：检查 TELEGRAM_PROXY / HTTPS_PROXY 和网络"
   fi
+fi
+
+echo "${C_B}[Discord]${C_0}"
+if [ -z "$(env_get DISCORD_BOT_TOKEN)" ]; then info "未配置 Discord，跳过"
+else
+  while IFS=$'\t' read -r level msg; do
+    case "$level" in
+      OK) ok "$msg" ;; BAD) bad "$msg" ;; NOTE) note "$msg" ;; *) [ -z "$level" ] || note "$level $msg" ;;
+    esac
+  done < <(docker exec -i -u hermes hermes "$HERMES_PY" - < "$STACK_DIR/scripts/discord_diag.py" 2>/dev/null \
+           || printf 'BAD\tDiscord REST 诊断运行失败，检查镜像版本并运行 make doctor\n')
 fi
 
 echo "${C_B}[暴露面]${C_0}"
@@ -149,10 +167,16 @@ if [ -f data/.env ]; then
 import sys
 from agent.secret_scope import load_env_file
 from hermes_cli.config import get_env_path
+from pathlib import Path
 cur = load_env_file(get_env_path())
+want = {}
 for line in sys.stdin.read().splitlines():
     k, _, v = line.partition("=")
-    if cur.get(k) != v:
+    want[k] = v
+state = Path(get_env_path()).parent / ".stack-synced-env"
+previous = set(state.read_text().split()) if state.exists() else set()
+for k in sorted(set(want) | (previous & set(cur))):
+    if (k in want and cur.get(k) != want[k]) or (k not in want and k in cur):
         print(k, end=" ")' 2>/dev/null)" || drift="?"
   if [ "$drift" = "?" ]; then note "无法读取 data/.env 进行比较"
   elif [ -z "$drift" ]; then ok ".env 中的密钥已同步到 data/.env"

@@ -1,6 +1,7 @@
-# hermes-stack：Telegram ↔ Hermes Agent ↔ 独立开发环境（devbox）
+# hermes-stack：Telegram / Discord ↔ Hermes Agent ↔ 独立开发环境（devbox）
 #
 #   Telegram ──(长轮询，出站)──> hermes   官方镜像，运行网关与 Dashboard
+#   Discord  ──(WebSocket，出站)──> │    同一网关，可单独或同时启用
 #                                  │  terminal.backend = ssh：命令、文件读写、代码执行都在 devbox
 #                                  ▼
 #                                devbox   Ubuntu 24.04 开发环境，/workspace
@@ -44,7 +45,7 @@ services:
     volumes:
       # Hermes 全部状态：config.yaml / .env / 会话 / 记忆 / skills / cron / 日志
       - ./data:/opt/data
-      # 只读：Agent 回复 MEDIA:/workspace/... 时，网关直接从这里读取文件发到 Telegram
+      # 只读：Agent 回复 MEDIA:/workspace/... 时，网关直接从这里读取文件发回聊天
       - ./workspace:/workspace:ro
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-9119}:9119"

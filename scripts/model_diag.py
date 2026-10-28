@@ -53,7 +53,7 @@ else:
     key_state = f"已配置（…{str(key)[-4:]}）"
 
 emit("OK", f"模型路由：{prov} · {mode} · {base or '默认端点'}")
-emit("OK" if model else "NOTE", f"模型：{model or '未选择（运行 make model 或在 Telegram 发 /model）'}，密钥：{key_state}")
+emit("OK" if model else "NOTE", f"模型：{model or '未选择（运行 make model 或在聊天中发 /model）'}，密钥：{key_state}")
 if str(key).startswith("${"):
     emit("BAD", f"model.api_key 引用的变量没有值：{key}（在 .env 中设置后运行 make up）")
     key = ""

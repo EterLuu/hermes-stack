@@ -56,17 +56,8 @@ done < <(clamp_cpu_limits)
 [ -n "$(env_get POSTGRES_PASSWORD)" ]                    || env_set POSTGRES_PASSWORD "$(rand_hex 16)"
 
 # ---------- 2. 校验必填项 ----------
-token="$(env_get TELEGRAM_BOT_TOKEN)"
-users="$(env_get TELEGRAM_ALLOWED_USERS)"
-problems=()
-[ -n "$token" ] || problems+=("TELEGRAM_BOT_TOKEN 为空")
-[ -n "$users" ] || problems+=("TELEGRAM_ALLOWED_USERS 为空")
-if [ -n "$token" ] && ! printf '%s' "$token" | grep -qE '^[0-9]{5,}:[A-Za-z0-9_-]{30,}$'; then
-  problems+=("TELEGRAM_BOT_TOKEN 格式不对（应形如 123456789:AAH...）")
-fi
-if [ -n "$users" ] && ! printf '%s' "$users" | tr -d ' ' | grep -qE '^-?[0-9]+(,-?[0-9]+)*$'; then
-  problems+=("TELEGRAM_ALLOWED_USERS 应填数字用户 ID（从 @userinfobot 获取），多个用逗号分隔，不能填 @用户名")
-fi
+check_messaging_env
+problems=("${MESSAGING_PROBLEMS[@]}")
 for k in $(env_dollar_keys); do
   problems+=("$k 的值含有 \$，docker compose 会把它当成变量替换：请用单引号包起来，如 $k='...'")
 done
@@ -159,9 +150,9 @@ ssh_port="$(env_get DEVBOX_SSH_PORT)"; ssh_port="${ssh_port:-2222}"
 cat <<EOF
 
 ${C_B}部署完成。接下来：${C_0}
-  1. 在 Telegram 里给 bot 发「你好」，再发 /sethome
+  1. 在已配置的 Telegram / Discord 中给 bot 发「你好」，再发 /sethome（Discord 频道中先 @Bot）
   2. 试试：在 devbox 里执行 whoami && node -v && python -V && go version
-  3. 还没有选择模型：运行 make model，或在 Telegram 里发 /model
+  3. 还没有选择模型：运行 make model，或在聊天中发 /model
   4. Dashboard：在本地电脑运行 ssh -L ${dash_port}:127.0.0.1:${dash_port} <服务器>，再打开 http://localhost:${dash_port}
      使用 Tailscale 时，也可以在服务器上运行 sudo tailscale serve --bg ${dash_port}
      账号 $(env_get HERMES_DASHBOARD_BASIC_AUTH_USERNAME)，密码见 .env 中的 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD

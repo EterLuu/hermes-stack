@@ -20,6 +20,8 @@ ps: ## 查看容器状态
 	docker compose ps
 check: ## 自检
 	./scripts/check.sh
+test: ## 离线回归测试（需要 python3）
+	python3 -m unittest discover -s tests -v
 check-llm: ## 自检，并实际调用一次模型（消耗少量 token）
 	./scripts/check.sh --llm
 doctor: ## 自检，并运行 hermes doctor
@@ -41,4 +43,4 @@ backup: ## 备份
 update: ## 备份后升级 Hermes 和 devbox
 	./scripts/update.sh
 
-.PHONY: help init up down restart logs ps check check-llm doctor configure model cli config shell backup update
+.PHONY: help init up down restart logs ps check test check-llm doctor configure model cli config shell backup update

@@ -1,4 +1,17 @@
 # Created by https://www.toptal.com/developers/gitignore/api/windows,linux,macos
+/.env
+/.env.*
+!/.env.example
+/data/
+/data.before-restore-*/
+/workspace/
+/workspace.before-restore-*/
+/secrets/
+/secrets.before-restore-*/
+/backups/
+/.restore.*/
+__pycache__/
+*.pyc
 # Edit at https://www.toptal.com/developers/gitignore?templates=windows,linux,macos
 
 ### Linux ###

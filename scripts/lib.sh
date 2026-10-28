@@ -64,17 +64,62 @@ env_dollar_keys() {
   grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -vE "^[A-Za-z0-9_]+='" | grep -E '=.*\$' | cut -d= -f1 || true
 }
 
-# 需要同步到 data/.env 的密钥：值非空的 TELEGRAM_*、*_API_KEY、*_TOKEN。
+# 需要同步到 data/.env 的平台配置与密钥：值非空的 TELEGRAM_*、DISCORD_*、*_API_KEY、*_TOKEN。
 # Hermes 网关从 data/.env 读取这些键，而不是容器环境变量（见 scripts/sync_env.py）。
 # 每行输出 KEY=VALUE，仅用于通过管道传给容器，不要打印到终端。
 hermes_secret_lines() {
   [ -f "$ENV_FILE" ] || return 0
   local k v
   for k in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | tr -d = | sort -u \
-             | grep -E '^TELEGRAM_|_API_KEY$|_TOKEN$' | grep -vE '^HERMES_DASHBOARD_' || true); do
+             | grep -E '^TELEGRAM_|^DISCORD_|_API_KEY$|_TOKEN$' | grep -vE '^HERMES_DASHBOARD_' || true); do
     v="$(env_get "$k")"
     [ -n "$v" ] && printf '%s=%s\n' "$k" "$v"
   done
+  return 0
+}
+
+# 按 token 判断要启用的平台；不额外维护 enabled 开关。
+enabled_platforms() {
+  local platform key
+  for platform in telegram discord; do
+    key="$(printf '%s' "$platform" | tr '[:lower:]' '[:upper:]')"
+    [ -z "$(env_get "${key}_BOT_TOKEN")" ] || printf '%s\n' "$platform"
+  done
+  return 0
+}
+
+# 访问策略在构建前校验。Discord 使用数字用户 ID；角色白名单为可选的额外授权。
+check_messaging_env() {
+  MESSAGING_PROBLEMS=()
+  local platform prefix token users k value
+  [ -n "$(enabled_platforms)" ] || MESSAGING_PROBLEMS+=("至少配置一个平台：TELEGRAM_BOT_TOKEN 或 DISCORD_BOT_TOKEN")
+  while read -r platform; do
+    [ -n "$platform" ] || continue
+    prefix="$(printf '%s' "$platform" | tr '[:lower:]' '[:upper:]')"
+    token="$(env_get "${prefix}_BOT_TOKEN")"
+    users="$(env_get "${prefix}_ALLOWED_USERS")"
+    [ -n "$users" ] || MESSAGING_PROBLEMS+=("${prefix}_ALLOWED_USERS 为空：请填写可使用 Agent 的数字用户 ID")
+    if [ "$platform" = telegram ]; then
+      if ! printf '%s' "$token" | grep -qE '^[0-9]{5,}:[A-Za-z0-9_-]{30,}$'; then
+        MESSAGING_PROBLEMS+=("TELEGRAM_BOT_TOKEN 格式不对（应形如 123456789:AAH...）")
+      fi
+      if [ -n "$users" ] && ! printf '%s' "$users" | tr -d ' ' | grep -qE '^-?[0-9]+(,-?[0-9]+)*$'; then
+        MESSAGING_PROBLEMS+=("TELEGRAM_ALLOWED_USERS 应填数字用户 ID（从 @userinfobot 获取），多个用逗号分隔")
+      fi
+    else
+      # Discord token 的格式可能变化，只由 REST 检查鉴权结果，不依赖固定长度或分段。
+      for k in DISCORD_ALLOWED_USERS DISCORD_ALLOWED_CHANNELS DISCORD_ALLOWED_ROLES; do
+        value="$(env_get "$k")"
+        if [ -n "$value" ] && ! printf '%s' "$value" | grep -qE '^[[:space:]]*[1-9][0-9]*[[:space:]]*(,[[:space:]]*[1-9][0-9]*[[:space:]]*)*$'; then
+          MESSAGING_PROBLEMS+=("$k 应填正整数 ID，多个用逗号分隔，不能填用户名或 @提及")
+        fi
+      done
+      value="$(env_get DISCORD_HOME_CHANNEL)"
+      if [ -n "$value" ] && ! printf '%s' "$value" | grep -qE '^[1-9][0-9]*$'; then
+        MESSAGING_PROBLEMS+=("DISCORD_HOME_CHANNEL 应填单个频道的正整数 ID")
+      fi
+    fi
+  done < <(enabled_platforms)
   return 0
 }
 

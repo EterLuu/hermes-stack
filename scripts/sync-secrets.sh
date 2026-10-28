@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把 .env 中的密钥（TELEGRAM_*、*_API_KEY、*_TOKEN）同步到 data/.env，有变化时重启网关。
+# 把 .env 中的平台配置与密钥（TELEGRAM_*、DISCORD_*、*_API_KEY、*_TOKEN）同步到 data/.env，有变化时重启网关。
 # 用法：scripts/sync-secrets.sh [--no-restart]
 #
 # Hermes 网关从 data/.env 读取 bot token、白名单和 API Key，不读取容器环境变量，
